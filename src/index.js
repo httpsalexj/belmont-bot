@@ -21,10 +21,10 @@ import {
  * APPLICATION_CHANNEL_ID
  * STAFF_ROLE_ID
  * TICKETS_CHANNEL_ID
- * API_SECRET  (opcional, mas recomendado)
+ * API_SECRET (opcional, mas recomendado)
  *
  * Porta:
- * PORT (Discloud) ou BOT_PORT (local)
+ * PORT (Render) ou BOT_PORT (local)
  */
 
 function must(name) {
@@ -47,6 +47,7 @@ const client = new Client({
   partials: [Partials.Channel], // pra DM funcionar
 });
 
+// discord.js v14: ready
 client.once("ready", () => {
   console.log(`✅ Bot online como ${client.user?.tag}`);
 });
@@ -59,8 +60,22 @@ process.on("unhandledRejection", (e) => console.error("UnhandledRejection:", e))
 const app = express();
 app.use(express.json({ limit: "128kb" }));
 
-// CORS (liberado por enquanto). Quando você tiver a URL final do seu site, eu travo certinho.
-app.use(cors({ origin: "*", methods: ["POST", "OPTIONS"] }));
+// ✅ CORS pro GitHub Pages
+app.use(
+  cors({
+    origin: "https://httpsalexj.github.io",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "x-api-secret"],
+  })
+);
+app.options(
+  "*",
+  cors({
+    origin: "https://httpsalexj.github.io",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "x-api-secret"],
+  })
+);
 
 app.get("/", (req, res) => res.status(200).send("Belmont API OK"));
 app.get("/health", (req, res) => res.status(200).json({ ok: true }));
@@ -98,15 +113,15 @@ function buildApplicationEmbed(data) {
   return e;
 }
 
-function buildButtons(discordId) {
-  // customId leva o id do candidato para localizar depois
+// ✅ customId inclui messageId pra conseguir desativar botões após modal
+function buildButtons(discordId, messageId = "0") {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`approve:${discordId}`)
+      .setCustomId(`approve:${discordId}:${messageId}`)
       .setLabel("Aprovar")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`reject:${discordId}`)
+      .setCustomId(`reject:${discordId}:${messageId}`)
       .setLabel("Reprovar")
       .setStyle(ButtonStyle.Danger)
   );
@@ -114,7 +129,6 @@ function buildButtons(discordId) {
 }
 
 function disableButtons(row) {
-  // cria cópia desabilitada
   const newRow = new ActionRowBuilder();
   for (const c of row.components) {
     newRow.addComponents(ButtonBuilder.from(c).setDisabled(true));
@@ -160,9 +174,10 @@ app.post("/apply", async (req, res) => {
     }
 
     const embed = buildApplicationEmbed(data);
-    const row = buildButtons(discord_id);
 
-    await channel.send({ embeds: [embed], components: [row] });
+    // ✅ manda a mensagem e depois edita pra colocar o messageId no customId
+    const sent = await channel.send({ embeds: [embed], components: [buildButtons(discord_id, "0")] });
+    await sent.edit({ components: [buildButtons(discord_id, sent.id)] });
 
     return res.status(200).json({ ok: true });
   } catch (err) {
@@ -176,7 +191,8 @@ client.on("interactionCreate", async (interaction) => {
   try {
     // Botões
     if (interaction.isButton()) {
-      const [action, discordId] = interaction.customId.split(":");
+      const [action, discordId, messageId] = interaction.customId.split(":");
+
       if (!discordId || !isDiscordId(discordId)) {
         return interaction.reply({ content: "❌ Ação inválida.", ephemeral: true }).catch(() => {});
       }
@@ -189,10 +205,11 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.reply({ content: "❌ Você não tem permissão.", ephemeral: true }).catch(() => {});
       }
 
-      // IMPORTANTÍSSIMO: responder rápido pra não dar "Unknown interaction"
-      await interaction.deferReply({ ephemeral: true }).catch(() => {});
-
+      // ✅ Aprovar
       if (action === "approve") {
+        // responde rápido
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+
         // desabilitar botões na mensagem do canal
         const msg = interaction.message;
         const components = msg.components?.map(disableButtons) || [];
@@ -201,25 +218,27 @@ client.on("interactionCreate", async (interaction) => {
         // DM pro candidato
         const user = await client.users.fetch(discordId).catch(() => null);
         if (user) {
-          await user.send(
-            [
-              "✅ **Você foi aprovado(a) na Família Belmont!**",
-              "",
-              "📌 Próximo passo:",
-              `➡️ Abra um ticket no canal <#${TICKETS_CHANNEL_ID}> na aba **Recrutamento**.`,
-              "",
-              "Se suas DMs estavam fechadas, ative para receber avisos.",
-            ].join("\n")
-          ).catch(() => {});
+          await user
+            .send(
+              [
+                "✅ **Você foi aprovado(a) na Família Belmont!**",
+                "",
+                "📌 Próximo passo:",
+                `➡️ Abra um ticket no canal <#${TICKETS_CHANNEL_ID}> na aba **Recrutamento**.`,
+                "",
+                "Se suas DMs estavam fechadas, ative para receber avisos.",
+              ].join("\n")
+            )
+            .catch(() => {});
         }
 
         return interaction.editReply({ content: "✅ Aprovado com sucesso." }).catch(() => {});
       }
 
+      // ✅ Reprovar (ABRE MODAL IMEDIATO, sem defer)
       if (action === "reject") {
-        // abrir modal pedindo motivo
         const modal = new ModalBuilder()
-          .setCustomId(`rejectModal:${discordId}`)
+          .setCustomId(`rejectModal:${discordId}:${messageId || "0"}`)
           .setTitle("Reprovar candidato");
 
         const motivo = new TextInputBuilder()
@@ -232,23 +251,23 @@ client.on("interactionCreate", async (interaction) => {
 
         modal.addComponents(new ActionRowBuilder().addComponents(motivo));
 
-        // modal precisa ser showModal, então respondemos DE NOVO via followUp e encerramos defer
-        await interaction.deleteReply().catch(() => {}); // remove o "processando" (opcional)
         return interaction.showModal(modal).catch(() => {});
       }
 
-      return interaction.editReply({ content: "❌ Ação desconhecida." }).catch(() => {});
+      return interaction.reply({ content: "❌ Ação desconhecida.", ephemeral: true }).catch(() => {});
     }
 
     // Modal de reprovação
     if (interaction.isModalSubmit()) {
-      const [kind, discordId] = interaction.customId.split(":");
+      const [kind, discordId, messageId] = interaction.customId.split(":");
+
       if (kind !== "rejectModal" || !isDiscordId(discordId)) {
         return interaction.reply({ content: "❌ Modal inválido.", ephemeral: true }).catch(() => {});
       }
 
       const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
       const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+
       if (!staffHasRole(member)) {
         return interaction.reply({ content: "❌ Você não tem permissão.", ephemeral: true }).catch(() => {});
       }
@@ -257,30 +276,40 @@ client.on("interactionCreate", async (interaction) => {
 
       const motivo = safeTrim(interaction.fields.getTextInputValue("motivo"), 500);
 
-      // desabilitar botões na mensagem original
-      const msg = interaction.message;
-      const components = msg?.components?.map(disableButtons) || [];
-      if (msg) await msg.edit({ components }).catch(() => {});
+      // ✅ desabilita botões na mensagem original usando messageId
+      try {
+        if (messageId && messageId !== "0") {
+          const ch = interaction.channel;
+          if (ch?.isTextBased()) {
+            const msg = await ch.messages.fetch(messageId).catch(() => null);
+            if (msg) {
+              const components = msg.components?.map(disableButtons) || [];
+              await msg.edit({ components }).catch(() => {});
+            }
+          }
+        }
+      } catch {}
 
       // DM candidato
       const user = await client.users.fetch(discordId).catch(() => null);
       if (user) {
-        await user.send(
-          [
-            "❌ **Sua inscrição na Família Belmont foi reprovada.**",
-            "",
-            `📝 Motivo: ${motivo}`,
-            "",
-            "✅ Você poderá tentar novamente mais tarde.",
-          ].join("\n")
-        ).catch(() => {});
+        await user
+          .send(
+            [
+              "❌ **Sua inscrição na Família Belmont foi reprovada.**",
+              "",
+              `📝 Motivo: ${motivo}`,
+              "",
+              "✅ Você poderá tentar novamente mais tarde.",
+            ].join("\n")
+          )
+          .catch(() => {});
       }
 
       return interaction.editReply({ content: "❌ Reprovado com sucesso." }).catch(() => {});
     }
   } catch (err) {
     console.error("interaction error:", err);
-    // nunca deixe crashar
     if (interaction?.isRepliable()) {
       interaction.reply({ content: "❌ Ocorreu um erro.", ephemeral: true }).catch(() => {});
     }
