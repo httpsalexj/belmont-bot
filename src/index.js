@@ -60,22 +60,28 @@ process.on("unhandledRejection", (e) => console.error("UnhandledRejection:", e))
 const app = express();
 app.use(express.json({ limit: "128kb" }));
 
-// ✅ CORS pro GitHub Pages
+// ✅ CORS (Netlify + GitHub Pages + Localhost)
+const ALLOWED_ORIGINS = [
+  "https://familia-belmont.netlify.app",
+  "https://httpsalexj.github.io",
+  "http://localhost:3000",
+];
+
 app.use(
   cors({
-    origin: "https://httpsalexj.github.io",
+    origin: (origin, cb) => {
+      // permite chamadas sem Origin (healthchecks/curl)
+      if (!origin) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS bloqueado: ${origin}`), false);
+    },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "x-api-secret"],
   })
 );
-app.options(
-  "*",
-  cors({
-    origin: "https://httpsalexj.github.io",
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-api-secret"],
-  })
-);
+
+// preflight
+app.options("*", cors());
 
 app.get("/", (req, res) => res.status(200).send("Belmont API OK"));
 app.get("/health", (req, res) => res.status(200).json({ ok: true }));
@@ -93,7 +99,7 @@ function staffHasRole(member) {
 }
 
 function buildApplicationEmbed(data) {
-  const e = new EmbedBuilder()
+  return new EmbedBuilder()
     .setTitle("📨 Nova Inscrição | Família Belmont")
     .setDescription("Recebida pelo site. Use os botões abaixo para aprovar ou reprovar.")
     .addFields(
@@ -109,13 +115,11 @@ function buildApplicationEmbed(data) {
     )
     .setFooter({ text: "Sistema de Recrutamento | Família Belmont" })
     .setTimestamp();
-
-  return e;
 }
 
 // ✅ customId inclui messageId pra conseguir desativar botões após modal
 function buildButtons(discordId, messageId = "0") {
-  const row = new ActionRowBuilder().addComponents(
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`approve:${discordId}:${messageId}`)
       .setLabel("Aprovar")
@@ -125,7 +129,6 @@ function buildButtons(discordId, messageId = "0") {
       .setLabel("Reprovar")
       .setStyle(ButtonStyle.Danger)
   );
-  return row;
 }
 
 function disableButtons(row) {
@@ -207,7 +210,6 @@ client.on("interactionCreate", async (interaction) => {
 
       // ✅ Aprovar
       if (action === "approve") {
-        // responde rápido
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
         // desabilitar botões na mensagem do canal
@@ -250,7 +252,6 @@ client.on("interactionCreate", async (interaction) => {
           .setPlaceholder("Explique o motivo (respeitoso e direto).");
 
         modal.addComponents(new ActionRowBuilder().addComponents(motivo));
-
         return interaction.showModal(modal).catch(() => {});
       }
 
